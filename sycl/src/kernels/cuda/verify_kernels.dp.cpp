@@ -24,6 +24,10 @@
 #include <thread>
 #include <vector>
 
+#if defined(_WIN32)
+#undef OUT   // minwindef.h's empty SAL macro: this file names a template parameter OUT
+#undef IN
+#endif
 #ifndef STRATA_PLAN_LOCAL
 #define STRATA_PLAN_LOCAL 1   // 0: the original one-thread plan kernel (A/B)
 #endif

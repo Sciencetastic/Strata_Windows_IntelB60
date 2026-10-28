@@ -38,6 +38,10 @@
 #include <random>
 #include <string>
 #include <vector>
+#if defined(_WIN32)   // Windows SDK macros that collide with names in this file
+#undef near
+#undef far
+#endif
 
 namespace {
 

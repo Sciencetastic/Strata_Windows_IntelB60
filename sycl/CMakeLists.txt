@@ -100,7 +100,16 @@ list(APPEND _sycl_flags -fsycl-default-sub-group-size=32)
 # split the first launch in the prompt path (the embedding gather) paid 245 ms for the image it shared (2026-09-30).
 list(APPEND _sycl_link -fsycl-device-code-split=per_kernel)
 list(APPEND _sycl_flags -fsycl-device-code-split=per_kernel)
-add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:${_sycl_flags}>" -fp-model=precise -Wno-unused-parameter
+# Windows: icx is the MSVC-style driver there, so the floating-point model is /fp:precise and the CRT must not
+# define min/max over std::min/std::max (windows.h is reached through the Level Zero and platform headers).
+if(WIN32)
+  set(_strata_fp_model /fp:precise)
+  add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+  add_compile_options(/utf-8 /EHsc)
+else()
+  set(_strata_fp_model -fp-model=precise)
+endif()
+add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:${_sycl_flags}>" ${_strata_fp_model} -Wno-unused-parameter
                     -Wno-unused-variable -Wno-deprecated-declarations)
 add_link_options(${_sycl_link})
 
@@ -130,7 +139,12 @@ add_library(strata_includes INTERFACE)
 target_include_directories(strata_includes INTERFACE
   ${CMAKE_CURRENT_SOURCE_DIR}/include      # migrated headers + dpct/ helpers, first
   ${STRATA_ROOT}/include)
-target_compile_options(strata_includes INTERFACE -Wall -Wextra)
+if(WIN32)
+  target_compile_options(strata_includes INTERFACE /W3   # clang-cl's -Wall is -Weverything
+    "$<$<COMPILE_LANGUAGE:CXX>:/FI${CMAKE_CURRENT_SOURCE_DIR}/include/strata/win_compat.hpp>")
+else()
+  target_compile_options(strata_includes INTERFACE -Wall -Wextra)
+endif()
 
 # --- CPU-side pieces, identical to the top-level build ------------------------------------------------------------
 strata_resolve(_spec src/spec/suffix_drafter.cpp src/spec/controller.cpp src/spec/draft_policy.cpp
@@ -267,8 +281,13 @@ add_library(strata_prefill STATIC ${_prefill}
             ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/moe_fused_stub.cpp   # upstream's fused int8 kernels: not built here
             ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/xmx_moe.dp.cpp         # A770 port: grouped XMX expert GEMM
             ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/esimd_moe.dp.cpp)       # 151-b70: fused int8 DPAS expert products (ESIMD, Battlemage)
-target_compile_options(strata_prefill PUBLIC -qmkl=sequential)
-target_link_options(strata_prefill PUBLIC -qmkl=sequential)
+if(WIN32)
+  target_compile_options(strata_prefill PUBLIC /Qmkl:sequential)
+  target_link_options(strata_prefill PUBLIC /Qmkl:sequential)
+else()
+  target_compile_options(strata_prefill PUBLIC -qmkl=sequential)
+  target_link_options(strata_prefill PUBLIC -qmkl=sequential)
+endif()
 target_link_libraries(strata_prefill PUBLIC strata_engine)
 
 strata_resolve(_main src/program/generate.cpp)

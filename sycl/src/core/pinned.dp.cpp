@@ -320,19 +320,27 @@ namespace {
 bool sliced_pin_limit(uint64_t& limit, std::string& why) {
     constexpr uint64_t GiB = 1ull << 30;
     char buf[256];
-    int dev = 0;
-    cudaDeviceProp p{};
     uint64_t budget = 0, usage = 0;
-    std::string err = "no CUDA device properties";
-    if (cudaGetDevice(&dev) == cudaSuccess && cudaGetDeviceProperties(&p, dev) == cudaSuccess &&
-        strata::platform::gpu_shared_memory_budget(p.luid, budget, usage, err)) {
+    std::string err = "no LUID for the SYCL device";
+    // SYCL port (Windows): the CUDA device's LUID comes from the SYCL device instead (sycl_ext_intel_device_info)
+    bool have_luid = false;
+    unsigned char luid[8] = {};
+    try {
+        const sycl::device d = dpct::get_in_order_queue().get_device();
+        if (d.has(sycl::aspect::ext_intel_device_info_luid)) {
+            const auto l = d.get_info<sycl::ext::intel::info::device::luid>();
+            std::memcpy(luid, l.data(), sizeof luid);
+            have_luid = true;
+        }
+    } catch (const sycl::exception&) {
+    }
+    if (have_luid && strata::platform::gpu_shared_memory_budget(luid, budget, usage, err)) {
         limit = budget > usage + 4 * GiB ? budget - usage - 4 * GiB : 0;
         std::snprintf(buf, sizeof buf, "the GPU's shared-memory budget %.1f GiB - %.1f GiB in use - 4 GiB",
                       (double) budget / GiB, (double) usage / GiB);
         why = buf;
         return true;
     }
-    (void) cudaGetLastError();
     const uint64_t ram = strata::platform::total_physical_memory();
     if (ram == 0) return false;
     limit = ram / 2 > 8 * GiB ? ram / 2 - 8 * GiB : 0;

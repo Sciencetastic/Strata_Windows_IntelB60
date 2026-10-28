@@ -127,6 +127,9 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #include <string>
 #include <set>
 #include <vector>
+#if defined(_WIN32)
+#undef small   // rpcndr.h's `#define small char` (reached through the includes above): this file has `int64_t small`
+#endif
 
 namespace {
 // Windows' WDDM driver model: native Windows, or WSL2 (its GPU goes through /dev/dxg to the Windows driver).  There,

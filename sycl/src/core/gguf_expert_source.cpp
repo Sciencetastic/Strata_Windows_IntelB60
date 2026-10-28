@@ -7,7 +7,42 @@
 #include <cstring>
 #include <utility>
 #include <fcntl.h>
+#if defined(_WIN32)
+// Windows: POSIX-style fds over the CRT, with pread as a positioned ReadFile (no shared file offset, thread-safe)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <io.h>
+#include <windows.h>
+#include <cstdint>
+#ifndef O_CLOEXEC
+#define O_CLOEXEC 0
+#endif
+namespace {
+using ssize_t = std::int64_t;
+inline int strata_win_open(const char* name, int flags) { return ::_open(name, flags | _O_BINARY); }
+inline int strata_win_close(int fd) { return ::_close(fd); }
+inline ssize_t strata_win_pread(int fd, void* buf, size_t n, uint64_t off) {
+    HANDLE h = (HANDLE) ::_get_osfhandle(fd);
+    if (h == INVALID_HANDLE_VALUE) return -1;
+    if (n > 0x40000000u) n = 0x40000000u;   // ReadFile takes a DWORD; the callers loop on short reads
+    OVERLAPPED ov{};
+    ov.Offset = (DWORD) (off & 0xFFFFFFFFu);
+    ov.OffsetHigh = (DWORD) (off >> 32);
+    DWORD got = 0;
+    if (!::ReadFile(h, buf, (DWORD) n, &got, &ov)) return ::GetLastError() == ERROR_HANDLE_EOF ? 0 : -1;
+    return (ssize_t) got;
+}
+}   // namespace
+#define STRATA_OPEN(n, f) strata_win_open((n), (f))
+#define STRATA_CLOSE(fd) strata_win_close(fd)
+#define STRATA_PREAD(fd, b, n, o) strata_win_pread((fd), (b), (n), (uint64_t) (o))
+#else
 #include <unistd.h>
+#define STRATA_OPEN(n, f) ::open((n), (f))
+#define STRATA_CLOSE(fd) ::close(fd)
+#define STRATA_PREAD(fd, b, n, o) ::pread((fd), (b), (n), (off_t) (o))
+#endif
 #include <dpct/dpct.hpp>
 #include <sycl/sycl.hpp>
 #include <thread>
@@ -24,7 +59,7 @@ void GgufExpertSource::close() {
     for (uint8_t* c : mirror_chunks_) if (c) sycl::free(c, dpct::get_in_order_queue());
     mirror_chunks_.clear();
     mirror_bytes_ = 0; mirror_ptr_.clear(); layer_first_.clear();
-    for (int fd : fds_) if (fd >= 0) ::close(fd);
+    for (int fd : fds_) if (fd >= 0) STRATA_CLOSE(fd);
     fds_.clear(); names_.clear(); layer_fd_.clear(); ring_.clear(); ring_key_.clear(); where_.clear();
     ring_next_ = 0;
 }
@@ -68,7 +103,7 @@ int GgufExpertSource::fd_of(int64_t layer, int role, std::string& err) {
     if (lay.gguf_file.size() > i && !lay.gguf_file[i].empty()) name = dir_ + lay.gguf_file[i];
     for (size_t k = 0; k < names_.size(); ++k)
         if (names_[k] == name) { layer_fd_[i] = (int) k; return fds_[k]; }
-    const int fd = ::open(name.c_str(), O_RDONLY | O_CLOEXEC);
+    const int fd = STRATA_OPEN(name.c_str(), O_RDONLY | O_CLOEXEC);
     if (fd < 0) { err = "--stream-experts: cannot open " + name; return -1; }
     names_.push_back(name);
     fds_.push_back(fd);
@@ -106,7 +141,7 @@ const uint8_t* GgufExpertSource::blob(int64_t layer, int64_t expert) {
         const uint64_t src = lay.gguf_off[(size_t) (3 * layer + r)] + per[r] * (uint64_t) expert;
         uint64_t done = 0;
         while (done < per[r]) {
-            const ssize_t n = ::pread(fd, buf.data() + at[r] + done, (size_t) (per[r] - done), (off_t) (src + done));
+            const ssize_t n = STRATA_PREAD(fd, buf.data() + at[r] + done, (size_t) (per[r] - done), src + done);
             if (n <= 0) { std::lock_guard<std::mutex> lk(mu_); where_.erase(key); ring_key_[slot] = -1; return nullptr; }
             done += (uint64_t) n;
         }
@@ -228,7 +263,7 @@ bool GgufExpertSource::read_into(int64_t layer, int64_t expert, uint8_t* dst, si
         const uint64_t src = lay.gguf_off[(size_t) (3 * layer + r)] + per[r] * (uint64_t) expert;
         uint64_t done = 0;
         while (done < per[r]) {
-            const ssize_t n = ::pread(fd, dst + at[r] + done, (size_t) (per[r] - done), (off_t) (src + done));
+            const ssize_t n = STRATA_PREAD(fd, dst + at[r] + done, (size_t) (per[r] - done), src + done);
             if (n <= 0) return false;
             done += (uint64_t) n;
         }
