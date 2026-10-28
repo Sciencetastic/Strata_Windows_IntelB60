@@ -52,6 +52,8 @@ def install_shared_embeddings():
     serve/server.py writes that file to /dev/shm when that has room, and strata-sycl.sh shares the host's /dev/shm with the
     container, so the path means the same on both sides.  Anywhere else (a full /dev/shm) the container cannot see the file:
     said once, in the log, in plain words."""
+    if sys.platform == "win32":   # the native Windows engine (strata-sycl.bat) runs on the host: any path it is given is readable
+        return
     orig = S.combined_embeddings_path
     said = []
 
