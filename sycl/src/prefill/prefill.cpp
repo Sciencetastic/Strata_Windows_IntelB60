@@ -4830,6 +4830,25 @@ bool Prefill::run_impl(const int64_t *tokens, int64_t n, int64_t pos0,
             next_run_ = std::async(std::launch::async, [this, tokens, c0, T, p0] {
                 return next_->run_impl(tokens + c0, T, p0, next_err_);
             });
+            // The next stage reads this chunk before this stage starts the next one (no two stages' chunks in flight at
+            // once). On by default on Windows: there, with both stages running at once (stage 0 on chunk K+1 while stage 1
+            // reads chunk K on the other card), the prompt stopped dead in the second chunk on 2x Arc Pro B60 (native
+            // Windows build, Level Zero V2, driver 32.0.101.8976) - a different layer each time, 0 layers served, the
+            // host idle - and with this wait every multi-chunk prompt passed at the same speed (2,100 tokens in five
+            // 512-token chunks: 445 tok/s). STRATA_SPLIT_SERIAL=1 forces it, =0 turns it off.
+            static const bool split_serial = [] {
+                const char* e = std::getenv("STRATA_SPLIT_SERIAL");
+#if defined(_WIN32)
+                return e == nullptr || e[0] != '0';
+#else
+                return e != nullptr && e[0] == '1';
+#endif
+            }();
+            if (split_serial) {
+                const bool ok_next = next_run_.get();
+                next_run_ = std::future<bool>();
+                if (!ok_next) { err = next_err_; return false; }
+            }
             hand_buf_ ^= 1;
             continue;   // the last stage reports the chunk (on_chunk)
         }
