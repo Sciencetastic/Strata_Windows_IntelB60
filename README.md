@@ -5,6 +5,18 @@
   </picture>
 </p>
 
+> [!NOTE]
+> **This is a fork: Strata on native Windows for Intel Arc GPUs** (SYCL, no WSL or Docker).
+> Upstream Strata runs Intel Arc on Linux only. This branch adds a native Windows build of the Intel engine,
+> tested on **2x Arc Pro B60 24 GB** (Windows 11, driver 32.0.101.8976, Intel oneAPI 2026.1, Visual Studio 2026)
+> with Qwen3.8-Flash-Next IQ2_XS: 48-58 tok/s decode, 600-700 tok/s prompt, 100K context, pictures through the CPU reader.
+>
+> - **How to build and run it:** [docs/INTEL_ARC.md, "Windows (native build, experimental)"](docs/INTEL_ARC.md#windows-native-build-experimental)
+> - **Status and discussion upstream:** [Niko1221/Strata#1552](https://github.com/Niko1221/Strata/issues/1552)
+> - **Build from source only:** there is no ready-made Windows Intel package. Only the two-B60 setup above has been tested;
+>   other cards, a single card and the desktop app on Windows have not.
+> - Everything else on this page is upstream Strata's README. The main project is [Niko1221/Strata](https://github.com/Niko1221/Strata).
+
 <h3 align="center">Run powerful AI on your own computer.</h3>
 <p align="center">Chat, code and work with images, locally.</p>
 
@@ -155,7 +167,7 @@ Follow the prompts to download and start a model. [Terminal guide](docs/TERMINAL
 | **NVIDIA GeForce RTX 20 / 30 / 40 / 50 series** | [NVIDIA setup](docs/INSTALL.md#what-you-need) |
 | **AMD Radeon RX 7700 / 7800 / 7900, RX 9060 / 9070, AI PRO R9700** | [AMD setup](docs/AMD_HIP.md) |
 | **AMD Radeon RX 6800 / 6900 · experimental** | [RX 6000 setup](docs/AMD_HIP.md#rdna2-gfx1030) |
-| **Intel Arc · Linux** | [Intel setup](docs/INTEL_ARC.md) |
+| **Intel Arc · Linux** · **Windows (this fork)** | [Intel setup](docs/INTEL_ARC.md) · [Windows](docs/INTEL_ARC.md#windows-native-build-experimental) |
 | **Apple Silicon · M1 or newer** | [Mac setup](docs/MAC.md) |
 | **AMD Ryzen AI Max · Strix Halo** | [Strix Halo setup](docs/STRIX_HALO.md) |
 
