@@ -153,16 +153,89 @@ Things that matter on an Arc (details in [INTEL.md](INTEL.md)):
 Two cards on `xe` (2x Arc Pro B70, IQ3_S, 0.1.44): `--layer-split auto` picked a split at about 11 tok/s where
 `--layer-split 30` ran about 54. The auto choice now prefers the split with the most VRAM headroom (above).
 
-**Not tested by anyone:** Windows (no native build path), Arc on WSL2 with the current engine, integrated Arc GPUs (the B390 /
+**Not tested by anyone:** Windows beyond the one native two-B60 setup ([below](#windows-native-build-experimental)), Arc on WSL2 with the current engine, integrated Arc GPUs (the B390 /
 Panther Lake in #515; shared-memory planning does not exist), and pictures on a Battlemage card with a GPU reader. Pictures work
 on the A750 (on by default, read on the CPU). See [INTEL.md](INTEL.md#pictures-on-an-arc).
 
-## Windows
+## Windows (native build, experimental)
 
-There is no Windows path. `setup --backend sycl` on Windows stops and points here. oneAPI exists for Windows, but
-`sycl/CMakeLists.txt` uses GCC-style flags (`-mavx512f`, `-fp-model=precise`, `-qmkl`) and the runner is a bash/Docker script.
-Nobody has tried a native build. WSL2 with an Arc was used by one tester (the B580 row above), but setup cannot detect the card
-there, because it reads `/sys/class/drm`, which WSL2 does not have.
+`setup --backend sycl` still stops on Windows: there is no ready-made Windows Intel engine, and setup's Intel path reads the
+card from sysfs and runs the engine in Docker. The engine itself builds and runs natively with the scripts in `sycl/tools/`.
+One community setup has run it so far (2x Arc Pro B60 24 GB, Windows 11, driver 32.0.101.8976, oneAPI 2026.1, Visual Studio
+2026); nothing else is tested.
+
+**What you need:** Visual Studio 2022 or 2026 (any edition, or Build Tools) with *Desktop development with C++* and *C++
+CMake tools*; Intel oneAPI for Windows with the DPC++/C++ compiler and oneMKL (the offline installer's components
+`intel.oneapi.win.cpp-dpcpp-common` and `intel.oneapi.win.mkl.devel`, about 5 GB installed); Git; Python 3.10+.
+The scripts find Visual Studio with vswhere and oneAPI at `%ONEAPI_ROOT%` (default `C:\Program Files (x86)\Intel\oneAPI`).
+
+**Build** (from the checkout; ahead-of-time code for the card, about 20 minutes the first time):
+
+```
+sycl\tools\win-build.bat bmg-g21          :: Arc B580 / B570 / Pro B60; bmg-g31 for the Pro B70
+sycl\tools\win-build-tests.bat            :: optional: the kernel parity tests, JIT build in build-sycl-jit
+sycl\tools\win-build-vision.bat           :: optional: the CPU picture reader (strata-vision.exe)
+```
+
+The tests run on the card with `ctest --test-dir build-sycl-jit` in a window where `sycl\tools\win-env.bat` was called and
+`ONEAPI_DEVICE_SELECTOR=level_zero:0` is set. On the B60: 46 of 51 pass; `ple_parity` needs a model fixture, `iq_parity` /
+`iq_parity_fixtures` skip without theirs, `s2_expert_grouped_parity` shows the same 4 bitwise differences (host reference within
+tolerance) as the Linux 2x B60 report, and `gr_parity` fails in the opt-in `STRATA_QFUSE` path only.
+
+**Prepare a model** (download, checksums, native pack, tokenizer, MTP draft layer; setup's own steps 5 and 6):
+
+```
+py -3 -m venv .venv
+.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python sycl\tools\win_prepare.py --model IQ2_XS --data D:\Strata-data
+```
+
+It prints the pack, shard and MTP paths for the config.
+
+**Run:** `serve/server.py` (or `sycl/serve/server_intel.py`) with a config whose `exe` is `sycl\serve\strata-sycl.bat`, the
+Windows twin of `strata-sycl.sh`: it calls oneAPI's `setvars.bat` and sets the port's defaults (`STRATA_VERIFY_DEVICE_PLAN`,
+`STRATA_VERIFY_NO_HOST`, `STRATA_STAGER_THREADS=12`, `SYCL_CACHE_PERSISTENT=0`, `ZES_ENABLE_SYSMAN=1`). A two-B60 config
+that ran IQ2_XS with every expert in VRAM and 100K of context:
+
+```json
+{
+ "engine": "strata",
+ "exe": "C:\\path\\to\\Strata\\sycl\\serve\\strata-sycl.bat",
+ "cwd": "C:\\path\\to\\Strata",
+ "tokenizer": "D:\\Strata-data\\packs\\iq2_xs\\tokenizer",
+ "model_name": "qwen3.8-flash-next-iq2_xs",
+ "backend": "sycl",
+ "args": ["--pack", "D:\\Strata-data\\packs\\iq2_xs",
+          "--native", "D:\\Strata-data\\models\\IQ2_XS\\Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00001-of-00002.gguf",
+          "--ple-gguf", "D:\\Strata-data\\models\\IQ2_XS\\Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf",
+          "--expert-profile", "data/expert-profile.bin", "--expert-cache", "auto", "--stream-experts",
+          "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5", "--mtp", "D:\\Strata-data\\mtp\\rt",
+          "--max-context", "102400", "--kv", "int8", "--kv-resident", "32768", "--vram-reserve-mib", "1024",
+          "--no-prefill-borrow", "--layer-split", "28"],
+ "env": {"ONEAPI_DEVICE_SELECTOR": "level_zero:0,1", "STRATA_MIRROR_MIB": "6144", "STRATA_STAGE_TRIM": "1"}
+}
+```
+
+Pictures: add `"--vision"` to `args` and a `"vision"` section with `strata-vision.exe`, the model's
+`mmproj-Qwen3.8-Flash-Next-BF16.gguf`, the first shard as `model`, `"gpu": false`, `"max_tokens": 300`.
+
+Things that are different on Windows:
+
+- **A layer split reads a prompt one stage at a time.** With both stages at once (stage 0 on chunk K+1 while stage 1 reads
+  chunk K on the other card), a prompt longer than one chunk stopped dead in its second chunk on the two B60s: a different
+  layer each time, no layers served, the host idle, until the server's 60 s watchdog restarted the engine. Waiting for the
+  next stage after each chunk fixed every multi-chunk prompt at no measured cost (2,100 tokens in five 512-token chunks:
+  445 tok/s), so it is the default on Windows (`STRATA_SPLIT_SERIAL=0` turns it off; Linux is unchanged, `=1` turns it on
+  there). The cause is not known.
+- **The card that drives the monitor has about 3.5 GB less VRAM** (the desktop compositor). Give that card fewer layers
+  (`--layer-split` toward the other card): 25 was refused on the B60s, 28 started with every expert resident.
+- **PCIe:** the B60s probed 0.8 and 13.9 GB/s host-to-device; with the slow card, every mirrored expert costs decode speed,
+  so a config that keeps them all in VRAM was much faster (53-58 against 25-32 tok/s at 98% resident).
+- A stray `"` in the system PATH breaks `vcvars64.bat` and `setvars.bat` (`\... was unexpected at this time`); the scripts
+  drop quotes from PATH for their own window.
+
+WSL2 with an Arc was used by one tester (the B580 row above), but setup cannot detect the card there, because it reads
+`/sys/class/drm`, which WSL2 does not have.
 
 ## Reporting a problem
 
